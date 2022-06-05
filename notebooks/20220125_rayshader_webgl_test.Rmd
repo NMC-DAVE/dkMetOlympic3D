@@ -1,0 +1,32 @@
+---
+title: "Rayshader webgl test"
+output: html_notebook
+---
+
+```{r message=FALSE, warning=FALSE}
+
+library(rgl)
+options(rgl.useNULL=TRUE, rgl.printRglwidget=TRUE)
+
+library(rayshader)
+library(magrittr)
+```
+
+```{r message=FALSE, warning=FALSE}
+montereybay %>%
+  sphere_shade() %>%
+  plot_3d(montereybay,zscale=50,water=TRUE, watercolor="#233aa1")
+
+santa_cruz = c(36.962957, -122.021033) 
+render_label(montereybay,lat = santa_cruz[1], long = santa_cruz[2],
+            extent = attr(montereybay, "extent"),
+            altitude=12000, zscale=50, text = "Santa Cruz")
+
+widget <- rgl::rglwidget()
+widget
+```
+
+```{r message=FALSE, warning=FALSE}
+
+render_snapshot(webshot = TRUE)
+```

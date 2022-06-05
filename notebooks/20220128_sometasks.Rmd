@@ -1,0 +1,41 @@
+---
+title: "一些临时的任务"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Ctrl+Shift+Enter*. 
+
+```{r}
+
+file <- "../products/CMA_MESO(1km)/22012720/22012720.001.png"
+img <- magick::image_read(file)
+logo <- magick::image_read("../data/nmc_large.png")
+color_bar <- magick::image_read("../data/color_bar.png")
+img <- magick::image_composite(img, logo, offset = "+1100+100")
+img <- magick::image_composite(img, magick::image_resize(color_bar, "x70"), offset = "+180+170")
+print(img)
+```
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*.
+```{r}
+library(nmcMetIO)
+
+# get map extent
+map_bbox = list(p1 = list(long = 116.0093, lat = 39.76907),
+                p2 = list(long = 116.6504, lat = 40.25094))
+
+# get map image size
+image_size <- define_image_size(map_bbox, major_dim = 2000)
+
+map_file <- "stadium_map_streat.png"
+
+# 下载和读入地图图形文件
+if(!file.exists(map_file)){
+  get_arcgis_map_image(map_bbox, map_type = "World_Topo_Map", file = map_file,
+                       width = image_size$width, height = image_size$height, 
+                       sr_bbox=4326)}
+
+```
+

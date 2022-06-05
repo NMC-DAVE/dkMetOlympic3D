@@ -1,0 +1,298 @@
+---
+title: "北京鸟巢体育馆模式预报三维显示分析"
+output: html_notebook
+---
+
+## 概况
+
+本程序读取GRAPES_1km数值模式预报数据, 叠加在三维地形上进行可视化显示.
+
+## 程序配置
+
+载入必备的程序库用于读取, 处理和可视化数据.
+
+```{r warning=FALSE, message=FALSE}
+library(ggplot2)
+library(raster)
+library(png)
+library(rayshader)
+library(leaflet)
+library(metR)
+library(geosphere)
+library(magrittr)
+library(nmcMetIO)
+
+work_dir <- "/media/kan-dai/workspace/workcode/personal/dk_winter_olympic_3D"
+setwd(work_dir)
+```
+
+## 准备地理信息数据
+
+### 准备地形图像
+
+地形数据从"[https://www.gmrt.org/services/gridserverinfo.php\#!/services/getGMRTGrid" 下载](https://www.gmrt.org/services/gridserverinfo.php#!/services/getGMRTGrid%22下载), 输出为geotiff格式, 分辨率选择最大.
+
+```{r message=FALSE, warning=FALSE}
+
+# 载入地形数据
+elev_file <- "../data/stadium_topo_small.tif"
+elev_img <- raster::raster(elev_file)
+
+# 设置坐标信息
+crs(elev_img) <- CRS('+init=EPSG:4326')
+
+# 利用leaflet可视化地形数据
+pal <- leaflet::colorNumeric(c("#0C2C84", "#41B6C4", "#FFFFCC"), # span of values in palette
+                    values(elev_img), #range of values
+  na.color = "transparent")
+
+leaflet() %>% 
+  addProviderTiles("OpenTopoMap", group = "OSM") %>%
+  addRasterImage(elev_img,
+                 color=pal, 
+                 opacity = 0.6) %>%
+  leaflet::addLegend(values = values(elev_img),
+                     pal = pal,
+                     title = "Digital elevation model")
+```
+
+-   将raster类型数据转换为rayshader可处理的数据;
+-   由于数据内可能存在NA值, rayshader无法处理, 可以用最低值来填充.
+
+```{r message=FALSE, warning=FALSE}
+
+# convert it to a matrix which rayshader can handle.
+elev_matrix <- raster_to_matrix(elev_img)
+
+# fill NA values
+elev_matrix[!is.finite(elev_matrix)] <- min(elev_matrix, na.rm=TRUE)
+```
+
+计算地形阴影层, 存入变量, 可以在三维地形显示时叠加到地形上. 将地形数据和阴影层叠加起来, 展示二维效果.
+
+```{r message=FALSE, warning=FALSE}
+
+shademat_file <- file.path(work_dir, 'data', "shademat_small.rds")
+ambmat_file <- file.path(work_dir, 'data', "ambmat_small.rds")
+raymat_file <- file.path(work_dir, 'data', "raymat_small.rds")
+
+if(!file.exists(shademat_file)){
+  shademat <- sphere_shade(elev_matrix, texture = "imhof4")
+  saveRDS(shademat, file=shademat_file)}
+shademat <- readRDS(shademat_file)
+
+if(!file.exists(ambmat_file)){
+  ambmat <- ambient_shade(elev_matrix, zscale=30)
+  saveRDS(ambmat, file=ambmat_file)}
+ambmat <- readRDS(ambmat_file)
+
+if(!file.exists(raymat_file)){
+  raymat <- ray_shade(elev_matrix, zscale=30, lambert = TRUE)
+  saveRDS(raymat, file=raymat_file)}
+raymat <- readRDS(raymat_file)
+
+# plot 2D
+shademat %>%
+  add_shadow(raymat, max_darken = 0.5) %>%
+  add_shadow(ambmat, max_darken = 0.5) %>%
+  plot_map()
+```
+
+### 准备地图图像
+
+```{r message=FALSE, warning=FALSE}
+
+# 获得地图范围
+bbox = extent(elev_img)
+bbox = list(p1 = list(long = bbox[1], lat = bbox[3]),
+            p2 = list(long = bbox[2], lat = bbox[4]))
+
+# get map image size
+image_size <- define_image_size(bbox, major_dim = 2000)
+
+overlay_file <- "../data/stadium_map_small.png"
+if(!file.exists(overlay_file)){
+  get_arcgis_map_image(bbox, map_type = "World_Topo_Map", file = overlay_file,
+                       width = image_size$width, height = image_size$height, 
+                       sr_bbox=4326)
+}
+overlay_img <- png::readPNG(overlay_file)
+plot.new()
+
+# 显示png文件
+rasterImage(overlay_img, 0,0,1,1)
+```
+
+## 准备高分辨率网格预报数据
+
+### 读入温度场数据
+
+```{r message=FALSE, warning=FALSE}
+
+# load forecast
+#datafile <- "/media/winter_olympic_data/cma_meso_1km/202201220800/t2m/202201220800.001"
+#data <- read_micaps_4(datafile, outList=FALSE)
+dataT <- retrieve_micaps_model_grid("GRAPES_1KM/TMP/2M_ABOVE_GROUND/", filter="*.001")
+
+# extract region
+dataT <- dataT[lon >= bbox$p1$long & lon <= bbox$p2$long & lat >= bbox$p1$lat & lat <= bbox$p2$lat]
+
+# smooth the data
+out <- smooth2d(dataT$lon, dataT$lat, dataT$var1, theta=0.02, nx=128, ny=128)
+
+# plot contour image
+colors <- c("#3D0239","#FA00FC","#090079","#5E9DF8","#2E5E7F",
+            "#06F9FB","#0BF40B","#006103","#FAFB07","#D50404","#5A0303")
+p_temp <- ggplot(out, aes(x, y, z=z)) +
+  geom_contour_fill(breaks=seq(-12, 10, by=0.2)) +
+  geom_contour(breaks=seq(-12, 10, by=0.2), color="black", size=0.5) + 
+  geom_text_contour(stroke = 0.3, size=16, min.size=3) +
+  scale_fill_gradientn(name="Temp", colours=colors, limits=c(-12, 5)) +
+  scale_x_continuous(expand=c(0,0)) +
+  scale_y_continuous(expand=c(0,0)) +
+  guides(fill=FALSE)+
+  theme(panel.spacing=grid::unit(0, "mm"),
+        plot.margin=grid::unit(rep(-1.25,4),"lines"),
+        panel.background = element_rect(fill = "transparent"), # bg of the panel
+        plot.background = element_rect(fill = "transparent", color = NA), # bg of the plot
+        axis.text=element_blank(),
+        axis.ticks=element_blank(),
+        axis.title=element_blank(),
+        legend.key.size = unit(5, "cm"),
+        legend.key.height = unit(2.5, 'cm'),
+        legend.key.width = unit(6, 'cm'),
+        legend.position = c(0.25, 0.06),
+        legend.direction="horizontal",
+        legend.text = element_text(size=32),
+        legend.title = element_text(size=32),
+        legend.background = element_rect(fill="lightblue", 
+                                         size=0.5, linetype="solid"))
+
+# export png file
+overlay_file_temp <- "../data/fine_gridded_forecast_temp.png"
+png(overlay_file_temp, width=image_size$width, height=image_size$height, units="px", bg="transparent")
+p_temp
+dev.off()
+
+img <- png::readPNG(overlay_file_temp)
+plot.new()
+rasterImage(img, 0,0,1,1)
+```
+
+```{r message=FALSE, warning=FALSE}
+colors <- c("#3D0239","#FA00FC","#090079","#5E9DF8","#2E5E7F",
+            "#06F9FB","#0BF40B","#006103","#FAFB07","#D50404","#5A0303")
+p_temp <- ggplot(out, aes(x, y, z=z)) +
+  geom_contour_fill(breaks=seq(-16, 8, by=0.25)) +
+  geom_contour(breaks=seq(-16, 8, by=0.25), color="black", size=0.5) + 
+  scale_fill_gradientn(name="Temp", colours=colors, limits=c(-12, 5)) +
+  guides() +
+  theme(legend.key.size = unit(1, "cm"),
+        legend.key.height = unit(0.4, 'cm'),
+        legend.key.width = unit(1, 'cm'),
+        legend.position = c(0.1, 0.1),
+        legend.direction="horizontal",
+        legend.background = element_rect(fill="lightblue", 
+                                         size=0.5, linetype="solid"))
+p_temp
+```
+
+### 读入风场数据
+
+```{r fig.height=12, fig.width=12, message=FALSE, warning=FALSE}
+# load fine gridded forecast
+dataU <- retrieve_micaps_model_grid("GRAPES_1KM/UGRD/10M_ABOVE_GROUND/", filter="*.001")
+dataV <- retrieve_micaps_model_grid("GRAPES_1KM/VGRD/10M_ABOVE_GROUND/", filter="*.001")
+
+# extract region
+dataU <- dataU[lon >= bbox$p1$long & lon <= bbox$p2$long & lat >= bbox$p1$lat & lat <= bbox$p2$lat]
+dataV <- dataV[lon >= bbox$p1$long & lon <= bbox$p2$long & lat >= bbox$p1$lat & lat <= bbox$p2$lat]
+dataUV <- merge(dataU, dataV, by=c("lon", "lat", "lev", "time", "initTime", "fhour"))
+
+# plot wind streamlines
+p_wind <- ggplot(dataUV, aes(lon, lat)) +
+  geom_streamline(aes(dx=dlon(dataUV$var1.x,lat), dy=dlat(dataUV$var1.y), size=..step.., 
+                      alpha=..step.., color=sqrt(..dx..^2 + ..dy..^2)),
+                  L=0.03, res=2, n=10, S=5, lineend="round", size=5, arrow=NULL) + 
+  geom_arrow(aes(dx = dataUV$var1.x*0.8, dy = dataUV$var1.y*0.8), 
+             skip = 1, color = "black", arrow.length=3, size = 2.5) +
+  viridis::scale_color_viridis(guide="none") +
+  scale_size(range=c(0,3), guide="none") +
+  scale_alpha(guide="none") +
+  scale_x_continuous(expand=c(0,0)) +
+  scale_y_continuous(expand=c(0,0)) +
+  theme(panel.spacing=grid::unit(0, "mm"),
+        plot.margin=grid::unit(rep(-1.25,4),"lines"),
+        panel.background = element_rect(fill = "transparent"), # bg of the panel
+        plot.background = element_rect(fill = "transparent", color = NA), # bg of the plot
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        axis.text=element_blank(),
+        axis.ticks=element_blank(),
+        axis.title=element_blank())
+
+# export png file
+overlay_file_wind <- "../data/fine_gridded_forecast_wind.png"
+png(overlay_file_wind, width=image_size$width, height=image_size$height, units="px", bg="transparent")
+p_wind
+dev.off()
+
+img <- png::readPNG(overlay_file_wind)
+plot.new()
+rasterImage(img, 0,0,1,1)
+```
+
+## 三维地形叠加分析
+
+在地形上叠加上述生成的地图, 气温分布以及风场流线图.
+
+```{r message=FALSE, warning=FALSE}
+
+overlay_img <- png::readPNG(overlay_file)
+overlay_img_temp <- png::readPNG(overlay_file_temp)
+overlay_img_wind <- png::readPNG(overlay_file_wind)
+
+# 2D plot with map overlay
+shademat %>%
+  add_overlay(overlay_img, alphalayer = 0.95) %>%
+  add_overlay(overlay_img_temp, alphalayer = 0.65) %>%
+  add_overlay(overlay_img_wind, alphalayer = 0.95) %>%
+  add_shadow(raymat, max_darken = 0.4) %>%
+  add_shadow(ambmat, max_darken = 0.4) %>%
+  plot_map()
+```
+
+显示三维地形图.
+
+```{r message=FALSE, warning=FALSE, fig.height=12, fig.width=15}
+zscale <- 10
+
+rgl::clear3d()
+shademat %>% 
+  add_overlay(overlay_img, alphalayer = 0.95) %>%
+  add_overlay(overlay_img_temp, alphalayer = 0.6) %>%
+  add_overlay(overlay_img_wind, alphalayer = 0.8) %>%
+  add_shadow(raymat, max_darken = 0.4) %>%
+  add_shadow(ambmat, max_darken = 0.4) %>%
+  plot_3d(elev_matrix, zscale = zscale, windowsize = c(1000, 1000), background = "white", 
+          water = FALSE, soliddepth = -150, wateralpha = 0,
+          theta = 25, phi = 30, zoom = 0.6, fov = 60)
+
+label <- list(text="Olympic Stadium")
+label$pos <- find_image_coordinates(long=116.39200, lat=39.99150, bbox=bbox, 
+                                    image_width=dim(elev_matrix)[1], image_height=dim(elev_matrix)[2])
+render_label(elev_matrix, x = label$pos$x, y = label$pos$y, z = 6000,
+             zscale = zscale, text = label$text, textsize=1.2, linewidth = 5, freetype=TRUE)
+dist = distm(c(extent(elev_img)[1], extent(elev_img)[3]), 
+             c(extent(elev_img)[1], extent(elev_img)[4]), fun = distHaversine)[,1]
+render_scalebar(limits=round(dist/1000.,1),label_unit = 'km')
+render_compass(position = "N",compass_radius=120, scale_distance = 1.2) 
+
+rgl::par3d(windowRect=c(-450, -100, 1000, 1100))
+rgl::view3d(theta=20, phi=30, fov=45, zoom=0.6)
+
+Sys.sleep(3)
+render_snapshot('data/winter_olympic/output_image.png', title_text = "2022北京冬奥精细化预报",
+                title_size = 50, title_color = "black", title_font = "SimHei")
+# rgl::rgl.close()
+```
